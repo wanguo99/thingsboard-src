@@ -28,6 +28,7 @@ def user_payload(*, authority: str = "TENANT_ADMIN", tenant_id: UUID = TENANT_ID
         "id": entity(USER_ID, "USER"),
         "tenantId": entity(tenant_id, "TENANT"),
         "customerId": entity(UUID(int=0), "CUSTOMER"),
+        "username": "service01",
         "email": "service@example.com",
         "authority": authority,
     }
@@ -73,6 +74,14 @@ class ThingsBoardAdminClientTest(unittest.TestCase):
         session = self.execute_scenario(handler, lambda client: client.login(identity, TENANT_ID))
         self.assertEqual(session.user.tenant_id, TENANT_ID)
         self.assertEqual([request.url.path for request in requests], ["/api/auth/login", "/api/auth/user"])
+
+    def test_service_identity_accepts_username_and_phone(self) -> None:
+        self.assertEqual(ServiceIdentity.from_json(
+            b'{"schemaVersion":1,"username":"operator01","password":"not-a-real-password"}'
+        ).username, "operator01")
+        self.assertEqual(ServiceIdentity.from_json(
+            b'{"schemaVersion":1,"username":"+8613800138000","password":"not-a-real-password"}'
+        ).username, "+8613800138000")
 
     def test_service_login_rejects_wrong_authority_or_tenant(self) -> None:
         identity = ServiceIdentity("service@example.com", "not-a-real-password")

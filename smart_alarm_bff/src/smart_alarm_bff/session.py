@@ -181,7 +181,7 @@ class SessionService:
     @staticmethod
     def _principal_query() -> str:
         return """
-            SELECT u.id AS local_user_id, u.thingsboard_user_id, u.email,
+            SELECT u.id AS local_user_id, u.thingsboard_user_id, u.username, u.email,
                    u.authority, u.tenant_id AS internal_tenant_id,
                    u.customer_id AS internal_customer_id, u.status AS user_status,
                    u.identity_version, t.thingsboard_tenant_id,
@@ -204,7 +204,7 @@ class SessionService:
                    s.tenant_id AS session_tenant_id, s.customer_id AS session_customer_id,
                    s.policy_version AS session_policy_version,
                    s.identity_version AS session_identity_version,
-                   u.id AS local_user_id, u.thingsboard_user_id, u.email,
+                   u.id AS local_user_id, u.thingsboard_user_id, u.username, u.email,
                    u.authority, u.tenant_id AS internal_tenant_id,
                    u.customer_id AS internal_customer_id, u.status AS user_status,
                    u.identity_version, t.thingsboard_tenant_id,
@@ -234,7 +234,7 @@ class SessionService:
             raise SessionError("identity_revoked", status_code=403)
         if row["thingsboard_user_id"] != platform_user.user_id or row["authority"] != platform_user.authority:
             raise SessionError("identity_mismatch", status_code=403)
-        if row["email"] != platform_user.email:
+        if row["username"] != platform_user.username:
             raise SessionError("identity_mismatch", status_code=403)
         internal_tenant = row["internal_tenant_id"]
         internal_customer = row["internal_customer_id"]

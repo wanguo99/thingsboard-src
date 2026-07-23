@@ -9,7 +9,8 @@ from uuid import UUID
 
 import httpx
 
-from .thingsboard import ThingsBoardUser
+from .policy import PolicyError
+from .thingsboard import ThingsBoardUser, normalize_username
 
 
 class PlatformAdminError(RuntimeError):
@@ -35,7 +36,9 @@ class ServiceIdentity:
         if not isinstance(payload, dict) or set(payload) != {"schemaVersion", "username", "password"} or payload.get("schemaVersion") != 1:
             raise PlatformAdminError("invalid_service_identity", retryable=False)
         username, password = payload.get("username"), payload.get("password")
-        if not isinstance(username, str) or username != username.strip() or username.count("@") != 1 or len(username) > 320:
+        try:
+            username = normalize_username(username)
+        except PolicyError as exc:
             raise PlatformAdminError("invalid_service_identity", retryable=False)
         if not isinstance(password, str) or not 16 <= len(password) <= 1024:
             raise PlatformAdminError("invalid_service_identity", retryable=False)

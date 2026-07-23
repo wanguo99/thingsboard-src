@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from uuid import UUID
 
 import httpx
@@ -17,10 +18,31 @@ class ThingsBoardError(RuntimeError):
         self.retryable = retryable
 
 
+_USERNAME_PATTERN = re.compile(r"^(?:[a-z0-9][a-z0-9._@-]{1,62}[a-z0-9]|\+[0-9]{3,63})$")
+
+
+def normalize_username(value: object) -> str:
+    if not isinstance(value, str):
+        raise PolicyError("ThingsBoard user username is invalid")
+    normalized = value.strip().lower()
+    if value != value.strip() or not _USERNAME_PATTERN.fullmatch(normalized):
+        raise PolicyError("ThingsBoard user username is invalid")
+    return normalized
+
+
+def normalize_email(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or value != value.strip() or value.count("@") != 1 or len(value) > 320:
+        raise PolicyError("ThingsBoard user email is invalid")
+    return value.lower()
+
+
 @dataclass(frozen=True, slots=True)
 class ThingsBoardUser:
     user_id: UUID
-    email: str
+    username: str
+    email: str | None
     authority: str
     tenant_id: UUID | None
     customer_id: UUID | None
@@ -31,17 +53,15 @@ class ThingsBoardUser:
             raise PolicyError("ThingsBoard user response must be an object")
         allowed = {
             "id", "createdTime", "tenantId", "customerId", "email", "authority", "firstName", "lastName",
-            "name", "additionalInfo", "phone", "version", "externalId",
+            "username", "name", "additionalInfo", "phone", "version", "externalId",
         }
         if set(payload).difference(allowed):
             raise PolicyError("ThingsBoard user response contains unknown fields")
         authority = payload.get("authority")
         if authority not in {"SYS_ADMIN", "TENANT_ADMIN", "CUSTOMER_USER"}:
             raise PolicyError("ThingsBoard user authority is unsupported")
-        email = payload.get("email")
-        if not isinstance(email, str) or email != email.strip() or email.count("@") != 1 or len(email) > 320:
-            raise PolicyError("ThingsBoard user email is invalid")
-        email = email.lower()
+        username = normalize_username(payload.get("username"))
+        email = normalize_email(payload.get("email"))
         customer_id = normalize_uuid(payload.get("customerId"), "customerId", required=False)
         zero = UUID(int=0)
         if customer_id == zero:
@@ -57,7 +77,7 @@ class ThingsBoardUser:
             raise PolicyError("ThingsBoard system user must not have tenant scope")
         user_id = normalize_uuid(payload.get("id"), "id")
         assert user_id is not None
-        return cls(user_id=user_id, email=email, authority=authority, tenant_id=tenant_id, customer_id=customer_id)
+        return cls(user_id=user_id, username=username, email=email, authority=authority, tenant_id=tenant_id, customer_id=customer_id)
 
 
 class ThingsBoardClient:

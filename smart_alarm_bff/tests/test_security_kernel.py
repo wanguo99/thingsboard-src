@@ -38,6 +38,7 @@ class SecurityKernelTest(unittest.TestCase):
             "id": {"id": user_id, "entityType": "USER"},
             "tenantId": {"id": "00000000-0000-0000-0000-000000000000", "entityType": "TENANT"},
             "customerId": {"id": "00000000-0000-0000-0000-000000000000", "entityType": "CUSTOMER"},
+            "username": "Admin01",
             "email": "Admin@Example.com",
             "authority": "SYS_ADMIN",
         }
@@ -45,12 +46,28 @@ class SecurityKernelTest(unittest.TestCase):
         self.assertEqual(user.user_id, UUID(user_id))
         self.assertIsNone(user.tenant_id)
         self.assertIsNone(user.customer_id)
+        self.assertEqual(user.username, "admin01")
         self.assertEqual(user.email, "admin@example.com")
+
+    def test_phone_username_does_not_require_email(self) -> None:
+        user_id = str(uuid4())
+        payload = {
+            "id": {"id": user_id, "entityType": "USER"},
+            "tenantId": {"id": "00000000-0000-0000-0000-000000000000", "entityType": "TENANT"},
+            "customerId": {"id": "00000000-0000-0000-0000-000000000000", "entityType": "CUSTOMER"},
+            "username": "+8613800138000",
+            "email": None,
+            "authority": "SYS_ADMIN",
+        }
+        user = ThingsBoardUser.from_payload(payload)
+        self.assertEqual(user.username, "+8613800138000")
+        self.assertIsNone(user.email)
 
     def test_non_system_user_requires_tenant(self) -> None:
         payload = {
             "id": {"id": str(uuid4())},
             "customerId": None,
+            "username": "owner01",
             "email": "owner@example.com",
             "authority": "TENANT_ADMIN",
         }
@@ -61,10 +78,11 @@ class SecurityKernelTest(unittest.TestCase):
         tenant = uuid4()
         user = uuid4()
         platform_tenant = uuid4()
-        platform_user = ThingsBoardUser(user, "owner@example.com", "TENANT_ADMIN", platform_tenant, None)
+        platform_user = ThingsBoardUser(user, "owner01", "owner@example.com", "TENANT_ADMIN", platform_tenant, None)
         row = {
             "local_user_id": user,
             "thingsboard_user_id": user,
+            "username": "owner01",
             "email": "owner@example.com",
             "authority": "TENANT_ADMIN",
             "internal_tenant_id": tenant,
