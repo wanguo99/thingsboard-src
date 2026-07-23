@@ -20,6 +20,7 @@ class ThingsBoardError(RuntimeError):
 
 
 _USERNAME_PATTERN = re.compile(r"^(?:[a-z0-9][a-z0-9._@-]{1,62}[a-z0-9]|\+[0-9]{3,63})$")
+THINGSBOARD_NULL_UUID = UUID("13814000-1dd2-11b2-8080-808080808080")
 
 
 def normalize_username(value: object) -> str:
@@ -64,11 +65,11 @@ class ThingsBoardUser:
         username = normalize_username(payload.get("username"))
         email = normalize_email(payload.get("email"))
         customer_id = normalize_uuid(payload.get("customerId"), "customerId", required=False)
-        zero = UUID(int=0)
-        if customer_id == zero:
+        null_ids = {UUID(int=0), THINGSBOARD_NULL_UUID}
+        if customer_id in null_ids:
             customer_id = None
         tenant_id = normalize_uuid(payload.get("tenantId"), "tenantId", required=False)
-        if tenant_id == zero:
+        if tenant_id in null_ids:
             tenant_id = None
         if (authority == "CUSTOMER_USER") != (customer_id is not None):
             raise PolicyError("ThingsBoard user customer scope is incompatible with authority")
@@ -156,7 +157,7 @@ class ThingsBoardClient:
             "customerId": (
                 {"id": str(customer_id), "entityType": "CUSTOMER"}
                 if customer_id is not None
-                else {"id": str(UUID(int=0)), "entityType": "CUSTOMER"}
+                else {"id": str(THINGSBOARD_NULL_UUID), "entityType": "CUSTOMER"}
             ),
             "additionalInfo": {},
         }

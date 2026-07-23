@@ -7,7 +7,7 @@ from uuid import UUID
 
 import httpx
 
-from smart_alarm_bff.thingsboard import ThingsBoardClient, ThingsBoardError
+from smart_alarm_bff.thingsboard import THINGSBOARD_NULL_UUID, ThingsBoardClient, ThingsBoardError
 
 
 TENANT_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -87,6 +87,21 @@ class ThingsBoardUserLifecycleTest(unittest.TestCase):
             lambda client: client.login("+8613800138000", "development-password"),
         )
         self.assertEqual(token, "platform.jwt")
+
+    def test_current_system_user_normalizes_official_null_entity_ids(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={
+                "id": entity(USER_ID, "USER"),
+                "tenantId": entity(THINGSBOARD_NULL_UUID, "TENANT"),
+                "customerId": entity(THINGSBOARD_NULL_UUID, "CUSTOMER"),
+                "username": "sysadmin01",
+                "email": "admin@example.com",
+                "authority": "SYS_ADMIN",
+            })
+
+        user = self.execute(handler, lambda client: client.current_user("platform.jwt"))
+        self.assertIsNone(user.tenant_id)
+        self.assertIsNone(user.customer_id)
 
     def test_login_error_does_not_expose_password(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

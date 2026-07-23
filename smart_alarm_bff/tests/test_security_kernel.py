@@ -7,7 +7,7 @@ from smart_alarm_bff.policy import PolicyError
 
 try:
     from smart_alarm_bff.session import SessionError, TokenCipher, parse_bearer, SessionService
-    from smart_alarm_bff.thingsboard import ThingsBoardUser
+    from smart_alarm_bff.thingsboard import THINGSBOARD_NULL_UUID, ThingsBoardUser
 except ModuleNotFoundError as exc:  # The source checkout may not have runtime wheels installed.
     _missing_dependency = exc.name
     SessionError = TokenCipher = parse_bearer = SessionService = ThingsBoardUser = None  # type: ignore[assignment]
@@ -36,8 +36,8 @@ class SecurityKernelTest(unittest.TestCase):
         user_id = str(uuid4())
         payload = {
             "id": {"id": user_id, "entityType": "USER"},
-            "tenantId": {"id": "00000000-0000-0000-0000-000000000000", "entityType": "TENANT"},
-            "customerId": {"id": "00000000-0000-0000-0000-000000000000", "entityType": "CUSTOMER"},
+            "tenantId": {"id": str(THINGSBOARD_NULL_UUID), "entityType": "TENANT"},
+            "customerId": {"id": str(THINGSBOARD_NULL_UUID), "entityType": "CUSTOMER"},
             "username": "Admin01",
             "email": "Admin@Example.com",
             "authority": "SYS_ADMIN",
@@ -53,8 +53,8 @@ class SecurityKernelTest(unittest.TestCase):
         user_id = str(uuid4())
         payload = {
             "id": {"id": user_id, "entityType": "USER"},
-            "tenantId": {"id": "00000000-0000-0000-0000-000000000000", "entityType": "TENANT"},
-            "customerId": {"id": "00000000-0000-0000-0000-000000000000", "entityType": "CUSTOMER"},
+            "tenantId": {"id": str(THINGSBOARD_NULL_UUID), "entityType": "TENANT"},
+            "customerId": {"id": str(THINGSBOARD_NULL_UUID), "entityType": "CUSTOMER"},
             "username": "+8613800138000",
             "email": None,
             "authority": "SYS_ADMIN",
