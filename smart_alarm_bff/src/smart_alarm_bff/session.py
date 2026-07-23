@@ -85,9 +85,10 @@ class SessionContext:
 
 
 class SessionService:
-    def __init__(self, thingsboard: ThingsBoardClient, session_key: bytes) -> None:
+    def __init__(self, thingsboard: ThingsBoardClient, session_key: bytes, *, cookie_name: str = SESSION_COOKIE) -> None:
         self._thingsboard = thingsboard
         self._cipher = TokenCipher(session_key)
+        self.cookie_name = cookie_name
 
     async def create(self, pool: Pool[Any], platform_token: str, *, now: datetime | None = None) -> tuple[SessionContext, str]:
         try:

@@ -10,29 +10,33 @@ import asyncpg
 import httpx
 from redis.asyncio import Redis
 
-from .config import ProductionSettings
+from .config import LocalSettings, ProductionSettings
 from .thingsboard import ThingsBoardClient
 
 
 class Infrastructure:
-    def __init__(self, settings: ProductionSettings) -> None:
+    def __init__(self, settings: ProductionSettings | LocalSettings) -> None:
         self.settings = settings
         self._database_pool: asyncpg.Pool[Any] | None = None
         self._database_lock = asyncio.Lock()
-        self._valkey = Redis(
-            host=settings.valkey_host,
-            port=settings.valkey_port,
-            username=settings.valkey_username,
-            password=settings.valkey_password.decode("utf-8"),
-            ssl=True,
-            ssl_ca_certs=str(settings.valkey_ca_file),
-            decode_responses=False,
-            socket_connect_timeout=2,
-            socket_timeout=2,
-            health_check_interval=30,
-        )
+        valkey_options: dict[str, object] = {
+            "host": settings.valkey_host,
+            "port": settings.valkey_port,
+            "username": settings.valkey_username,
+            "password": settings.valkey_password.decode("utf-8") if settings.valkey_password else None,
+            "decode_responses": False,
+            "socket_connect_timeout": 2,
+            "socket_timeout": 2,
+            "health_check_interval": 30,
+        }
+        if settings.valkey_tls:
+            valkey_options.update({"ssl": True, "ssl_ca_certs": str(settings.valkey_ca_file)})
+        self._valkey = Redis(**valkey_options)
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(3), follow_redirects=False)
-        self.thingsboard = ThingsBoardClient(settings.thingsboard_url, verify=str(settings.thingsboard_ca_file))
+        self.thingsboard = ThingsBoardClient(
+            settings.thingsboard_url,
+            verify=str(settings.thingsboard_ca_file) if settings.thingsboard_ca_file else True,
+        )
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -46,7 +50,7 @@ class Infrastructure:
             return self._database_pool
         async with self._database_lock:
             if self._database_pool is None:
-                context = ssl.create_default_context(cafile=str(self.settings.database_ca_file))
+                context = ssl.create_default_context(cafile=str(self.settings.database_ca_file)) if self.settings.database_tls else None
                 self._database_pool = await asyncpg.create_pool(
                     host=self.settings.database_host,
                     port=self.settings.database_port,
@@ -66,12 +70,14 @@ class Infrastructure:
         return self._database_pool
 
     async def readiness(self) -> dict[str, object]:
-        checks = await asyncio.gather(
+        pending = [
             self._check_database(),
             self._check_valkey(),
             self._check_http("thingsboard", f"{self.settings.thingsboard_url}/actuator/info"),
-            self._check_http("oidc", f"{self.settings.oidc_issuer}/.well-known/openid-configuration"),
-        )
+        ]
+        if self.settings.oidc_readiness:
+            pending.append(self._check_http("oidc", f"{self.settings.oidc_issuer}/.well-known/openid-configuration"))
+        checks = await asyncio.gather(*pending)
         dependencies = {name: status for name, status in checks}
         ready = all(value["ready"] for value in dependencies.values())
         return {"ready": ready, "status": "ready" if ready else "not_ready", "dependencies": dependencies}

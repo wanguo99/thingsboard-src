@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from smart_alarm_bff.config import ConfigError, ProductionSettings, read_secret
+from smart_alarm_bff.config import ConfigError, LocalSettings, ProductionSettings, load_settings, read_secret
 
 
 class ProductionSettingsTest(unittest.TestCase):
@@ -102,6 +102,55 @@ class ProductionSettingsTest(unittest.TestCase):
         secret = Path(self.temporary.name) / "secret"
         secret.write_bytes(b"file-secret-value\n")
         self.assertEqual(read_secret({"VALUE_FILE": str(secret)}, "VALUE"), b"file-secret-value")
+
+
+class LocalSettingsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = {
+            "SMART_ALARM_ENVIRONMENT": "local",
+            "SMART_ALARM_DEPLOYMENT_COMMIT": "0123456789abcdef",
+            "SMART_ALARM_PUBLIC_ORIGIN": "http://127.0.0.1:5173",
+            "TB_HTTP_URL": "http://127.0.0.1:9090",
+            "SMART_ALARM_DATABASE_HOST": "127.0.0.1",
+            "SMART_ALARM_DATABASE_PORT": "55432",
+            "SMART_ALARM_DATABASE_NAME": "smart_alarm",
+            "SMART_ALARM_DATABASE_USER": "smart_alarm_app",
+            "SMART_ALARM_DATABASE_PASSWORD": "local-database-password",
+            "SMART_ALARM_VALKEY_HOST": "localhost",
+            "SMART_ALARM_VALKEY_PORT": "6379",
+            "SMART_ALARM_SESSION_KEY": "a" * 32,
+            "SMART_ALARM_ALLOWED_ORIGINS": "http://127.0.0.1:5173,http://localhost:5173",
+        }
+
+    def test_accepts_loopback_dependencies_without_tls(self) -> None:
+        settings = LocalSettings.from_env(self.env)
+
+        self.assertFalse(settings.database_tls)
+        self.assertFalse(settings.valkey_tls)
+        self.assertFalse(settings.oidc_readiness)
+        self.assertFalse(settings.secure_cookies)
+        self.assertEqual(settings.bind_host, "127.0.0.1")
+        self.assertEqual(settings.session_cookie_name, "smart_alarm_session_local")
+
+    def test_rejects_non_loopback_http_origins(self) -> None:
+        for name, value in (
+            ("SMART_ALARM_PUBLIC_ORIGIN", "http://192.168.1.10:5173"),
+            ("TB_HTTP_URL", "http://thingsboard.internal:9090"),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ConfigError, "loopback HTTP origin"):
+                    LocalSettings.from_env({**self.env, name: value})
+
+    def test_rejects_non_loopback_data_services(self) -> None:
+        for name in ("SMART_ALARM_DATABASE_HOST", "SMART_ALARM_VALKEY_HOST"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ConfigError, "must be loopback addresses"):
+                    LocalSettings.from_env({**self.env, name: "database.internal"})
+
+    def test_load_settings_only_selects_local_mode_explicitly(self) -> None:
+        self.assertIsInstance(load_settings(self.env), LocalSettings)
+        with self.assertRaisesRegex(ConfigError, "SMART_ALARM_PUBLIC_ORIGIN must be an absolute HTTPS URL"):
+            load_settings({**self.env, "SMART_ALARM_ENVIRONMENT": "development"})
 
 
 if __name__ == "__main__":

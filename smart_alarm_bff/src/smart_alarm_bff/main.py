@@ -1,4 +1,4 @@
-"""Production HTTP process entry point."""
+"""HTTP process entry point."""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 import uvicorn
 
 from . import __version__
-from .config import ConfigError, ProductionSettings
+from .config import ConfigError, load_settings
 from .infrastructure import Infrastructure
 from .directory_routes import mount_directory_routes
 from .device_routes import mount_device_routes
 from .write_routes import mount_write_routes
-from .session import SESSION_COOKIE, SessionError, SessionService, parse_bearer
+from .session import SessionError, SessionService, parse_bearer
 
 
 REQUESTS = Counter("smart_alarm_http_requests_total", "HTTP requests", ("method", "path", "status"))
@@ -26,9 +26,9 @@ LATENCY = Histogram("smart_alarm_http_request_duration_seconds", "HTTP request l
 
 
 def create_app() -> FastAPI:
-    settings = ProductionSettings.from_env()
+    settings = load_settings()
     infrastructure = Infrastructure(settings)
-    sessions = SessionService(infrastructure.thingsboard, settings.session_key)
+    sessions = SessionService(infrastructure.thingsboard, settings.session_key, cookie_name=settings.session_cookie_name)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -110,11 +110,11 @@ def create_app() -> FastAPI:
         except SessionError as exc:
             return session_error(exc)
         response.set_cookie(
-            SESSION_COOKIE,
+            settings.session_cookie_name,
             context.session_token,
             max_age=8 * 60 * 60,
             httponly=True,
-            secure=True,
+            secure=settings.secure_cookies,
             samesite="lax",
             path="/",
         )
@@ -123,7 +123,9 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/session")
     async def get_session(request: Request) -> Response:
         try:
-            context = await sessions.resolve(await infrastructure.database(), request.cookies.get(SESSION_COOKIE))
+            context = await sessions.resolve(
+                await infrastructure.database(), request.cookies.get(settings.session_cookie_name)
+            )
         except SessionError as exc:
             return session_error(exc)
         return context.principal.public_summary()
@@ -133,12 +135,12 @@ def create_app() -> FastAPI:
         try:
             await sessions.revoke(
                 await infrastructure.database(),
-                request.cookies.get(SESSION_COOKIE),
+                request.cookies.get(settings.session_cookie_name),
                 request.headers.get("X-CSRF-Token"),
             )
         except SessionError as exc:
             return session_error(exc)
-        response.delete_cookie(SESSION_COOKIE, path="/")
+        response.delete_cookie(settings.session_cookie_name, path="/", secure=settings.secure_cookies, samesite="lax")
         return {"status": "ok"}
 
     mount_directory_routes(app, sessions, infrastructure.database)
@@ -150,13 +152,13 @@ def create_app() -> FastAPI:
 
 def run() -> None:
     try:
-        ProductionSettings.from_env()
+        settings = load_settings()
     except ConfigError as exc:
-        raise SystemExit(f"invalid production configuration: {exc}") from None
+        raise SystemExit(f"invalid runtime configuration: {exc}") from None
     uvicorn.run(
         "smart_alarm_bff.main:create_app",
         factory=True,
-        host="0.0.0.0",
+        host=settings.bind_host,
         port=9081,
         proxy_headers=True,
         forwarded_allow_ips="127.0.0.1",

@@ -202,7 +202,7 @@ async def _guard(request: Request, sessions: SessionService, database: Callable[
     context = getattr(request.state, "session_context", None)
     if not isinstance(context, SessionContext):
         try:
-            context = await sessions.resolve(await database(), request.cookies.get("__Host-smart_alarm_session"))
+            context = await sessions.resolve(await database(), request.cookies.get(sessions.cookie_name))
         except SessionError as exc:
             raise WriteError(exc.code, exc.status_code) from exc
     try:
@@ -210,7 +210,7 @@ async def _guard(request: Request, sessions: SessionService, database: Callable[
     except PolicyError as exc:
         raise WriteError("capability_required", 403) from exc
     try:
-        await sessions.require_csrf(await database(), request.cookies.get("__Host-smart_alarm_session"), request.headers.get("X-CSRF-Token"))
+        await sessions.require_csrf(await database(), request.cookies.get(sessions.cookie_name), request.headers.get("X-CSRF-Token"))
     except SessionError as exc:
         raise WriteError(exc.code, exc.status_code) from exc
     request.state.session_context = context

@@ -1,4 +1,4 @@
-"""Strict production configuration with secret-file support."""
+"""Strict runtime configuration with secret-file support."""
 
 from __future__ import annotations
 
@@ -53,6 +53,22 @@ def _https_url(env: Mapping[str, str], name: str, *, allow_path: bool = False) -
         raise ConfigError(f"{name} must not contain credentials, query or fragment")
     if not allow_path and parsed.path not in {"", "/"}:
         raise ConfigError(f"{name} must be an origin without a path")
+    return value
+
+
+def _loopback_http_origin(env: Mapping[str, str], name: str) -> str:
+    value = _required(env, name).rstrip("/")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConfigError(f"{name} must be a loopback HTTP origin in local mode")
     return value
 
 
@@ -148,6 +164,12 @@ class ProductionSettings:
     notification_from: str
     webhook_url: bytes = field(repr=False)
     otel_exporter_endpoint: str
+    database_tls: bool = True
+    valkey_tls: bool = True
+    oidc_readiness: bool = True
+    secure_cookies: bool = True
+    session_cookie_name: str = "__Host-smart_alarm_session"
+    bind_host: str = "0.0.0.0"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ProductionSettings":
@@ -234,8 +256,97 @@ class ProductionSettings:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class LocalSettings:
+    environment: str
+    deployment_commit: str
+    public_origin: str
+    thingsboard_url: str
+    thingsboard_ca_file: None
+    database_host: str
+    database_port: int
+    database_name: str
+    database_user: str
+    database_password: bytes = field(repr=False)
+    database_ca_file: None = None
+    valkey_host: str = "127.0.0.1"
+    valkey_port: int = 6379
+    valkey_username: str | None = None
+    valkey_password: bytes | None = field(default=None, repr=False)
+    valkey_ca_file: None = None
+    oidc_issuer: None = None
+    session_key: bytes = field(default=b"", repr=False)
+    allowed_origins: tuple[str, ...] = ()
+    database_tls: bool = False
+    valkey_tls: bool = False
+    oidc_readiness: bool = False
+    secure_cookies: bool = False
+    session_cookie_name: str = "smart_alarm_session_local"
+    bind_host: str = "127.0.0.1"
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "LocalSettings":
+        source = os.environ if env is None else env
+        if _required(source, "SMART_ALARM_ENVIRONMENT") != "local":
+            raise ConfigError("LocalSettings requires SMART_ALARM_ENVIRONMENT=local")
+        commit = _required(source, "SMART_ALARM_DEPLOYMENT_COMMIT").lower()
+        if not _COMMIT_PATTERN.fullmatch(commit):
+            raise ConfigError("SMART_ALARM_DEPLOYMENT_COMMIT must be a 7..40 character lowercase Git SHA")
+        public_origin = _loopback_http_origin(source, "SMART_ALARM_PUBLIC_ORIGIN")
+        thingsboard_url = _loopback_http_origin(source, "TB_HTTP_URL")
+        database_host = _required(source, "SMART_ALARM_DATABASE_HOST")
+        valkey_host = _required(source, "SMART_ALARM_VALKEY_HOST")
+        if database_host not in {"127.0.0.1", "localhost", "::1"} or valkey_host not in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        }:
+            raise ConfigError("local database and Valkey hosts must be loopback addresses")
+        allowed_origins = tuple(
+            _loopback_http_origin({"origin": item.strip()}, "origin")
+            for item in _required(source, "SMART_ALARM_ALLOWED_ORIGINS").split(",")
+            if item.strip()
+        )
+        if public_origin not in allowed_origins:
+            raise ConfigError("SMART_ALARM_ALLOWED_ORIGINS must include SMART_ALARM_PUBLIC_ORIGIN")
+        valkey_password = source.get("SMART_ALARM_VALKEY_PASSWORD", "").encode("utf-8") or None
+        return cls(
+            environment="local",
+            deployment_commit=commit,
+            public_origin=public_origin,
+            thingsboard_url=thingsboard_url,
+            thingsboard_ca_file=None,
+            database_host=database_host,
+            database_port=_port(source, "SMART_ALARM_DATABASE_PORT"),
+            database_name=_required(source, "SMART_ALARM_DATABASE_NAME"),
+            database_user=_required(source, "SMART_ALARM_DATABASE_USER"),
+            database_password=read_secret(source, "SMART_ALARM_DATABASE_PASSWORD", minimum_bytes=8),
+            valkey_host=valkey_host,
+            valkey_port=_port(source, "SMART_ALARM_VALKEY_PORT"),
+            valkey_username=source.get("SMART_ALARM_VALKEY_USERNAME", "").strip() or None,
+            valkey_password=valkey_password,
+            session_key=read_secret(source, "SMART_ALARM_SESSION_KEY", minimum_bytes=32),
+            allowed_origins=allowed_origins,
+        )
+
+    def public_summary(self) -> dict[str, object]:
+        return {
+            "environment": self.environment,
+            "deploymentCommit": self.deployment_commit,
+            "publicOrigin": self.public_origin,
+            "thingsboardUrl": self.thingsboard_url,
+        }
+
+
+def load_settings(env: Mapping[str, str] | None = None) -> ProductionSettings | LocalSettings:
+    source = os.environ if env is None else env
+    if source.get("SMART_ALARM_ENVIRONMENT", "").strip() == "local":
+        return LocalSettings.from_env(source)
+    return ProductionSettings.from_env(source)
+
+
 def run() -> int:
-    settings = ProductionSettings.from_env()
+    settings = load_settings()
     print(f"configuration valid for {settings.environment} at {settings.deployment_commit}")
     return 0
 

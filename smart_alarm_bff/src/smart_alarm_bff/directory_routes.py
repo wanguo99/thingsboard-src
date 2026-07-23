@@ -50,7 +50,7 @@ def _require(principal: ProductPrincipal, capability: str) -> None:
 async def _load_session(request: Request, sessions: SessionService, database: Callable[[], Awaitable[Any]]) -> None:
     try:
         request.state.session_context = await sessions.resolve(
-            await database(), request.cookies.get("__Host-smart_alarm_session"),
+            await database(), request.cookies.get(sessions.cookie_name),
         )
     except SessionError as exc:
         raise DirectoryError(exc.code, exc.status_code) from exc
