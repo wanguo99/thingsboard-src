@@ -93,12 +93,71 @@ class ThingsBoardUserLifecycleTest(unittest.TestCase):
             [("POST", "/api/tenant"), ("DELETE", f"/api/tenant/{TENANT_ID}")],
         )
 
+    def test_tenant_and_customer_rename_preserve_platform_entities(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            is_tenant = request.url.path.startswith("/api/tenant")
+            entity_id = TENANT_ID if is_tenant else CUSTOMER_ID
+            entity_type = "TENANT" if is_tenant else "CUSTOMER"
+            if request.method == "GET":
+                return httpx.Response(200, json={
+                    "id": entity(entity_id, entity_type),
+                    "title": "Old Name",
+                    "additionalInfo": {"preserved": True},
+                })
+            payload = json.loads(request.content)
+            self.assertEqual(payload["title"], "New Name")
+            self.assertEqual(payload["additionalInfo"], {"preserved": True})
+            return httpx.Response(200, json=payload)
+
+        self.execute(handler, lambda client: client.update_tenant("admin.jwt", TENANT_ID, name="New Name"))
+        self.execute(handler, lambda client: client.update_customer("admin.jwt", CUSTOMER_ID, name="New Name"))
+
+        self.assertEqual(
+            [(request.method, request.url.path) for request in requests],
+            [
+                ("GET", f"/api/tenant/{TENANT_ID}"), ("POST", "/api/tenant"),
+                ("GET", f"/api/customer/{CUSTOMER_ID}"), ("POST", "/api/customer"),
+            ],
+        )
+
+    def test_create_and_delete_customer_use_official_platform_endpoints(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.method == "POST":
+                self.assertEqual(json.loads(request.content), {"title": "Customer One", "additionalInfo": {}})
+                return httpx.Response(200, json={"id": entity(CUSTOMER_ID, "CUSTOMER")})
+            return httpx.Response(200)
+
+        customer_id = self.execute(handler, lambda client: client.create_customer("admin.jwt", name="Customer One"))
+        self.execute(handler, lambda client: client.delete_customer("admin.jwt", customer_id))
+
+        self.assertEqual(customer_id, CUSTOMER_ID)
+        self.assertEqual(
+            [(request.method, request.url.path) for request in requests],
+            [("POST", "/api/customer"), ("DELETE", f"/api/customer/{CUSTOMER_ID}")],
+        )
+
     def test_create_tenant_rejects_invalid_platform_response(self) -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"id": {"entityType": "TENANT"}})
 
         with self.assertRaisesRegex(ThingsBoardError, "invalid_platform_tenant_response"):
             self.execute(handler, lambda client: client.create_tenant("admin.jwt", name="Tenant One"))
+
+    def test_entity_updates_reject_mismatched_platform_ids(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={
+                "id": entity(CUSTOMER_ID, "TENANT"),
+                "title": "Tenant One",
+            })
+
+        with self.assertRaisesRegex(ThingsBoardError, "invalid_platform_tenant_response"):
+            self.execute(handler, lambda client: client.update_tenant("admin.jwt", TENANT_ID, name="Tenant Two"))
 
     def test_login_accepts_phone_username_and_returns_only_access_token(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

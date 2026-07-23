@@ -7,6 +7,7 @@ random, HttpOnly session cookie plus a one-time-readable CSRF token.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -84,6 +85,15 @@ class SessionContext:
     principal: ProductPrincipal
 
 
+@asynccontextmanager
+async def _identity_connection(pool: Pool[Any]):
+    """Expose cross-tenant identity mappings for one transaction only."""
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            await connection.execute("SELECT set_config('smart_alarm.system_scope', 'true', true)")
+            yield connection
+
+
 class SessionService:
     def __init__(self, thingsboard: ThingsBoardClient, session_key: bytes, *, cookie_name: str = SESSION_COOKIE) -> None:
         self._thingsboard = thingsboard
@@ -127,24 +137,28 @@ class SessionService:
         if not session_token or not _TOKEN_PATTERN.fullmatch(session_token):
             raise SessionError("session_required")
         current = now or datetime.now(timezone.utc)
-        async with pool.acquire() as connection:
+        async with _identity_connection(pool) as connection:
             row = await connection.fetchrow(self._session_query(), _digest(session_token), current)
-            if row is None:
-                raise SessionError("session_invalid")
-            platform_token = self._cipher.decrypt(bytes(row["platform_token_ciphertext"]))
-            try:
-                platform_user = await self._thingsboard.current_user(platform_token)
-            except ThingsBoardError as exc:
+        if row is None:
+            raise SessionError("session_invalid")
+        platform_token = self._cipher.decrypt(bytes(row["platform_token_ciphertext"]))
+        try:
+            platform_user = await self._thingsboard.current_user(platform_token)
+        except ThingsBoardError as exc:
+            async with pool.acquire() as connection:
                 await connection.execute(
                     "UPDATE smart_alarm.http_sessions SET revoked_at = $2 WHERE session_digest = $1 AND revoked_at IS NULL",
                     _digest(session_token), current,
                 )
-                raise SessionError("platform_session_invalid") from exc
-            principal = self._principal_from_row(row, platform_user, session=True)
-            await connection.execute(
-                "UPDATE smart_alarm.http_sessions SET last_seen_at = $2 WHERE session_digest = $1 AND revoked_at IS NULL",
+            raise SessionError("platform_session_invalid") from exc
+        principal = self._principal_from_row(row, platform_user, session=True)
+        async with pool.acquire() as connection:
+            touched = await connection.fetchval(
+                "UPDATE smart_alarm.http_sessions SET last_seen_at = $2 WHERE session_digest = $1 AND revoked_at IS NULL AND expires_at > $2 RETURNING 1",
                 _digest(session_token), current,
             )
+        if touched != 1:
+            raise SessionError("session_invalid")
         return SessionContext(session_token, platform_token, principal)
 
     async def require_csrf(self, pool: Pool[Any], session_token: str | None, csrf_token: str | None) -> None:
@@ -173,7 +187,7 @@ class SessionService:
             )
 
     async def _load_principal(self, pool: Pool[Any], platform_user: ThingsBoardUser) -> ProductPrincipal:
-        async with pool.acquire() as connection:
+        async with _identity_connection(pool) as connection:
             row = await connection.fetchrow(self._principal_query(), platform_user.user_id)
         if row is None:
             raise SessionError("identity_not_registered", status_code=403)

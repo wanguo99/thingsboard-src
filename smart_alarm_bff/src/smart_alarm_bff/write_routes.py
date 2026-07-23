@@ -273,6 +273,7 @@ def register_write_routes(
     async def update_tenant(tenant_id: str, request: Request, body: dict[str, object]):
         try:
             principal = await _guard(request, sessions, database, "system:tenants:write")
+            context, platform = _platform_context(request, thingsboard)
             name = _name(body)
             key = _idempotency(request)
             tenant_uuid = UUID(tenant_id)
@@ -280,37 +281,107 @@ def register_write_routes(
                 operation_id, replay = await _begin_operation(connection, principal, key, "tenant-update", "TENANT", _body_hash({"tenantId": tenant_id, **body}))
                 if replay is not None:
                     return replay
-                row = await connection.fetchrow("UPDATE smart_alarm.tenants SET name = $2, version = version + 1, updated_at = clock_timestamp() WHERE id = $1 AND status = 'ACTIVE' RETURNING id, name", tenant_uuid, name)
-                if row is None:
+                current = await connection.fetchrow(
+                    "SELECT thingsboard_tenant_id, name FROM smart_alarm.tenants WHERE id = $1 AND status = 'ACTIVE'",
+                    tenant_uuid,
+                )
+                if current is None:
                     raise WriteError("not_found", 404)
-                result = {"operationId": str(operation_id), "kind": "system-tenant-update", "status": "SUCCEEDED", "tenant": {"id": str(row["id"]), "name": row["name"]}}
-                await _finish_operation(connection, operation_id, result, tenant_id)
-                await _audit(connection, principal, key, "TENANT_UPDATED", "TENANT", tenant_id, {"name": name})
-            return result
-        except (WriteError, ValueError) as exc:
+                platform_tenant_id, previous_name = current["thingsboard_tenant_id"], current["name"]
+                if platform_tenant_id is None:
+                    raise WriteError("tenant_identity_mapping_required", 409)
+            try:
+                await platform.update_tenant(context.platform_token, platform_tenant_id, name=name)
+            except ThingsBoardError as exc:
+                await _fail_operation(database, principal, operation_id, exc.code)
+                raise _platform_write_error(exc) from exc
+            try:
+                async with _scoped_connection(await database(), principal) as connection:
+                    row = await connection.fetchrow("UPDATE smart_alarm.tenants SET name = $2, version = version + 1, updated_at = clock_timestamp() WHERE id = $1 AND status = 'ACTIVE' RETURNING id, name", tenant_uuid, name)
+                    if row is None:
+                        raise WriteError("not_found", 404)
+                    result = {"operationId": str(operation_id), "kind": "system-tenant-update", "status": "SUCCEEDED", "tenant": {"id": str(row["id"]), "name": row["name"]}}
+                    await _finish_operation(connection, operation_id, result, tenant_id)
+                    await _audit(connection, principal, key, "TENANT_UPDATED", "TENANT", tenant_id, {"name": name})
+                return result
+            except Exception as exc:
+                try:
+                    await platform.update_tenant(context.platform_token, platform_tenant_id, name=previous_name)
+                except ThingsBoardError:
+                    _LOGGER.exception("failed to compensate ThingsBoard tenant rename %s", platform_tenant_id)
+                await _fail_operation(database, principal, operation_id, "local_tenant_update_failed")
+                if isinstance(exc, WriteError):
+                    raise
+                raise WriteError("local_tenant_update_failed", 503) from exc
+        except (WriteError, ValueError, ThingsBoardError) as exc:
+            if isinstance(exc, ThingsBoardError):
+                return _write_error(_platform_write_error(exc))
             return _write_error(exc if isinstance(exc, WriteError) else WriteError("not_found", 404))
 
     @router.post("/api/v1/system/tenants/{tenant_id}/archive")
     async def archive_tenant(tenant_id: str, request: Request):
         try:
             principal = await _guard(request, sessions, database, "system:tenants:write")
+            context, platform = _platform_context(request, thingsboard)
             key = _idempotency(request)
             tenant_uuid = UUID(tenant_id)
             async with _scoped_connection(await database(), principal) as connection:
                 operation_id, replay = await _begin_operation(connection, principal, key, "tenant-archive", "TENANT", _body_hash({"tenantId": tenant_id}))
                 if replay is not None:
                     return replay
-                count = await connection.fetchval("SELECT count(*) FROM smart_alarm.customers WHERE tenant_id = $1 AND status = 'ACTIVE'", tenant_uuid)
-                if count:
-                    raise WriteError("tenant_has_customers", 409)
-                row = await connection.fetchrow("UPDATE smart_alarm.tenants SET status = 'ARCHIVED', archived_at = clock_timestamp(), version = version + 1, updated_at = clock_timestamp() WHERE id = $1 AND status = 'ACTIVE' RETURNING id, name, archived_at", tenant_uuid)
-                if row is None:
+                current = await connection.fetchrow(
+                    "SELECT thingsboard_tenant_id, name FROM smart_alarm.tenants WHERE id = $1 AND status = 'ACTIVE'",
+                    tenant_uuid,
+                )
+                if current is None:
                     raise WriteError("not_found", 404)
-                result = {"operationId": str(operation_id), "kind": "system-tenant-archive", "status": "SUCCEEDED", "tenant": {"id": str(row["id"]), "name": row["name"], "archivedAt": int(row["archived_at"].timestamp() * 1000)}}
-                await _finish_operation(connection, operation_id, result, tenant_id)
-                await _audit(connection, principal, key, "TENANT_ARCHIVED", "TENANT", tenant_id, {})
-            return result
-        except (WriteError, ValueError) as exc:
+                resource_count = await connection.fetchval(
+                    """
+                    SELECT
+                        (SELECT count(*) FROM smart_alarm.customers WHERE tenant_id = $1 AND status = 'ACTIVE') +
+                        (SELECT count(*) FROM smart_alarm.users WHERE tenant_id = $1 AND status <> 'ARCHIVED') +
+                        (SELECT count(*) FROM smart_alarm.devices WHERE tenant_id = $1 AND lifecycle_state <> 'RETIRED') +
+                        (SELECT count(*) FROM smart_alarm.assets WHERE tenant_id = $1 AND status = 'ACTIVE') +
+                        (SELECT count(*) FROM smart_alarm.device_profiles WHERE tenant_id = $1 AND status = 'ACTIVE')
+                    """,
+                    tenant_uuid,
+                )
+                if resource_count:
+                    raise WriteError("tenant_has_customers", 409)
+                platform_tenant_id, tenant_name = current["thingsboard_tenant_id"], current["name"]
+                if platform_tenant_id is None:
+                    raise WriteError("tenant_identity_mapping_required", 409)
+            try:
+                await platform.delete_tenant(context.platform_token, platform_tenant_id)
+            except ThingsBoardError as exc:
+                await _fail_operation(database, principal, operation_id, exc.code)
+                raise _platform_write_error(exc) from exc
+            try:
+                async with _scoped_connection(await database(), principal) as connection:
+                    row = await connection.fetchrow("UPDATE smart_alarm.tenants SET status = 'ARCHIVED', archived_at = clock_timestamp(), version = version + 1, updated_at = clock_timestamp() WHERE id = $1 AND status = 'ACTIVE' RETURNING id, name, archived_at", tenant_uuid)
+                    if row is None:
+                        raise WriteError("not_found", 404)
+                    result = {"operationId": str(operation_id), "kind": "system-tenant-archive", "status": "SUCCEEDED", "tenant": {"id": str(row["id"]), "name": row["name"], "archivedAt": int(row["archived_at"].timestamp() * 1000)}}
+                    await _finish_operation(connection, operation_id, result, tenant_id)
+                    await _audit(connection, principal, key, "TENANT_ARCHIVED", "TENANT", tenant_id, {})
+                return result
+            except Exception as exc:
+                try:
+                    replacement_id = await platform.create_tenant(context.platform_token, name=tenant_name)
+                    async with _scoped_connection(await database(), principal) as connection:
+                        await connection.execute(
+                            "UPDATE smart_alarm.tenants SET thingsboard_tenant_id = $2 WHERE id = $1 AND status = 'ACTIVE'",
+                            tenant_uuid, replacement_id,
+                        )
+                except Exception:
+                    _LOGGER.exception("failed to compensate ThingsBoard tenant archive %s", platform_tenant_id)
+                await _fail_operation(database, principal, operation_id, "local_tenant_archive_failed")
+                if isinstance(exc, WriteError):
+                    raise
+                raise WriteError("local_tenant_archive_failed", 503) from exc
+        except (WriteError, ValueError, ThingsBoardError) as exc:
+            if isinstance(exc, ThingsBoardError):
+                return _write_error(_platform_write_error(exc))
             return _write_error(exc if isinstance(exc, WriteError) else WriteError("not_found", 404))
 
     @router.post("/api/v1/system/users")
@@ -539,18 +610,44 @@ def register_write_routes(
             principal = await _guard(request, sessions, database, "customers:write")
             if principal.internal_tenant_id is None:
                 raise WriteError("tenant_scope_required", 403)
+            context, platform = _platform_context(request, thingsboard)
+            if context.principal.platform_tenant_id is None:
+                raise WriteError("tenant_identity_mapping_required", 409)
             name = _name(body, 255)
             key = _idempotency(request)
             async with _scoped_connection(await database(), principal) as connection:
                 operation_id, replay = await _begin_operation(connection, principal, key, "customer-create", "CUSTOMER", _body_hash(body))
                 if replay is not None:
                     return replay
-                row = await connection.fetchrow("INSERT INTO smart_alarm.customers (tenant_id, name) VALUES ($1, $2) RETURNING id, name", principal.internal_tenant_id, name)
-                result = {"operationId": str(operation_id), "kind": "customer-create", "status": "SUCCEEDED", "customer": {"id": str(row["id"]), "name": row["name"], "deviceCount": 0, "assetCount": 0}}
-                await _finish_operation(connection, operation_id, result, str(row["id"]))
-                await _audit(connection, principal, key, "CUSTOMER_CREATED", "CUSTOMER", str(row["id"]), {"name": name})
-            return result
-        except WriteError as exc:
+                if await connection.fetchval(
+                    "SELECT 1 FROM smart_alarm.customers WHERE tenant_id = $1 AND lower(name) = lower($2) AND status = 'ACTIVE'",
+                    principal.internal_tenant_id, name,
+                ) == 1:
+                    raise WriteError("customer_already_exists", 409)
+            try:
+                platform_customer_id = await platform.create_customer(context.platform_token, name=name)
+            except ThingsBoardError as exc:
+                await _fail_operation(database, principal, operation_id, exc.code)
+                raise _platform_write_error(exc) from exc
+            try:
+                async with _scoped_connection(await database(), principal) as connection:
+                    row = await connection.fetchrow("INSERT INTO smart_alarm.customers (tenant_id, thingsboard_customer_id, name) VALUES ($1, $2, $3) RETURNING id, name", principal.internal_tenant_id, platform_customer_id, name)
+                    result = {"operationId": str(operation_id), "kind": "customer-create", "status": "SUCCEEDED", "customer": {"id": str(row["id"]), "name": row["name"], "deviceCount": 0, "assetCount": 0}}
+                    await _finish_operation(connection, operation_id, result, str(row["id"]))
+                    await _audit(connection, principal, key, "CUSTOMER_CREATED", "CUSTOMER", str(row["id"]), {"name": name, "thingsboardCustomerId": str(platform_customer_id)})
+                return result
+            except Exception as exc:
+                try:
+                    await platform.delete_customer(context.platform_token, platform_customer_id, missing_ok=True)
+                except ThingsBoardError:
+                    _LOGGER.exception("failed to compensate ThingsBoard customer %s", platform_customer_id)
+                await _fail_operation(database, principal, operation_id, "local_customer_persist_failed")
+                if isinstance(exc, WriteError):
+                    raise
+                raise WriteError("local_customer_persist_failed", 503) from exc
+        except (WriteError, ThingsBoardError) as exc:
+            if isinstance(exc, ThingsBoardError):
+                return _write_error(_platform_write_error(exc))
             return _write_error(exc)
 
     @router.patch("/api/v1/customers/{customer_id}")
@@ -559,6 +656,7 @@ def register_write_routes(
             principal = await _guard(request, sessions, database, "customers:write")
             if principal.internal_tenant_id is None:
                 raise WriteError("tenant_scope_required", 403)
+            context, platform = _platform_context(request, thingsboard)
             name = _name(body, 255)
             key = _idempotency(request)
             customer_uuid = UUID(customer_id)
@@ -566,38 +664,99 @@ def register_write_routes(
                 operation_id, replay = await _begin_operation(connection, principal, key, "customer-update", "CUSTOMER", _body_hash({"customerId": customer_id, **body}))
                 if replay is not None:
                     return replay
-                row = await connection.fetchrow("UPDATE smart_alarm.customers SET name = $3, version = version + 1, updated_at = clock_timestamp() WHERE tenant_id = $1 AND id = $2 AND status = 'ACTIVE' RETURNING id, name", principal.internal_tenant_id, customer_uuid, name)
-                if row is None:
+                current = await connection.fetchrow("SELECT thingsboard_customer_id, name FROM smart_alarm.customers WHERE tenant_id = $1 AND id = $2 AND status = 'ACTIVE'", principal.internal_tenant_id, customer_uuid)
+                if current is None:
                     raise WriteError("not_found", 404)
-                result = {"operationId": str(operation_id), "kind": "customer-update", "status": "SUCCEEDED", "customer": {"id": str(row["id"]), "name": row["name"], "deviceCount": 0, "assetCount": 0}}
-                await _finish_operation(connection, operation_id, result, customer_id)
-                await _audit(connection, principal, key, "CUSTOMER_UPDATED", "CUSTOMER", customer_id, {"name": name})
-            return result
-        except (WriteError, ValueError) as exc:
+                platform_customer_id, previous_name = current["thingsboard_customer_id"], current["name"]
+                if platform_customer_id is None:
+                    raise WriteError("customer_identity_mapping_required", 409)
+            try:
+                await platform.update_customer(context.platform_token, platform_customer_id, name=name)
+            except ThingsBoardError as exc:
+                await _fail_operation(database, principal, operation_id, exc.code)
+                raise _platform_write_error(exc) from exc
+            try:
+                async with _scoped_connection(await database(), principal) as connection:
+                    row = await connection.fetchrow("UPDATE smart_alarm.customers SET name = $3, version = version + 1, updated_at = clock_timestamp() WHERE tenant_id = $1 AND id = $2 AND status = 'ACTIVE' RETURNING id, name", principal.internal_tenant_id, customer_uuid, name)
+                    if row is None:
+                        raise WriteError("not_found", 404)
+                    result = {"operationId": str(operation_id), "kind": "customer-update", "status": "SUCCEEDED", "customer": {"id": str(row["id"]), "name": row["name"], "deviceCount": 0, "assetCount": 0}}
+                    await _finish_operation(connection, operation_id, result, customer_id)
+                    await _audit(connection, principal, key, "CUSTOMER_UPDATED", "CUSTOMER", customer_id, {"name": name})
+                return result
+            except Exception as exc:
+                try:
+                    await platform.update_customer(context.platform_token, platform_customer_id, name=previous_name)
+                except ThingsBoardError:
+                    _LOGGER.exception("failed to compensate ThingsBoard customer rename %s", platform_customer_id)
+                await _fail_operation(database, principal, operation_id, "local_customer_update_failed")
+                if isinstance(exc, WriteError):
+                    raise
+                raise WriteError("local_customer_update_failed", 503) from exc
+        except (WriteError, ValueError, ThingsBoardError) as exc:
+            if isinstance(exc, ThingsBoardError):
+                return _write_error(_platform_write_error(exc))
             return _write_error(exc if isinstance(exc, WriteError) else WriteError("not_found", 404))
 
     @router.post("/api/v1/customers/{customer_id}/archive")
     async def archive_customer(customer_id: str, request: Request):
         try:
             principal = await _guard(request, sessions, database, "customers:write")
+            context, platform = _platform_context(request, thingsboard)
             customer_uuid = UUID(customer_id)
             key = _idempotency(request)
             async with _scoped_connection(await database(), principal) as connection:
                 operation_id, replay = await _begin_operation(connection, principal, key, "customer-archive", "CUSTOMER", _body_hash({"customerId": customer_id}))
                 if replay is not None:
                     return replay
-                active_devices = await connection.fetchval("SELECT count(*) FROM smart_alarm.devices WHERE tenant_id = $1 AND customer_id = $2 AND lifecycle_state <> 'RETIRED'", principal.internal_tenant_id, customer_uuid)
-                active_members = await connection.fetchval("SELECT count(*) FROM smart_alarm.users WHERE tenant_id = $1 AND customer_id = $2 AND status <> 'ARCHIVED'", principal.internal_tenant_id, customer_uuid)
-                if active_devices or active_members:
-                    raise WriteError("customer_has_resources", 409)
-                row = await connection.fetchrow("UPDATE smart_alarm.customers SET status = 'ARCHIVED', archived_at = clock_timestamp(), version = version + 1, updated_at = clock_timestamp() WHERE tenant_id = $1 AND id = $2 AND status = 'ACTIVE' RETURNING id, name, archived_at", principal.internal_tenant_id, customer_uuid)
-                if row is None:
+                current = await connection.fetchrow("SELECT thingsboard_customer_id, name FROM smart_alarm.customers WHERE tenant_id = $1 AND id = $2 AND status = 'ACTIVE'", principal.internal_tenant_id, customer_uuid)
+                if current is None:
                     raise WriteError("not_found", 404)
-                result = {"operationId": str(operation_id), "kind": "customer-archive", "status": "SUCCEEDED", "customer": {"id": str(row["id"]), "name": row["name"], "deviceCount": 0, "assetCount": 0}}
-                await _finish_operation(connection, operation_id, result, customer_id)
-                await _audit(connection, principal, key, "CUSTOMER_ARCHIVED", "CUSTOMER", customer_id, {})
-            return result
-        except (WriteError, ValueError) as exc:
+                active_resources = await connection.fetchval(
+                    """
+                    SELECT
+                        (SELECT count(*) FROM smart_alarm.devices WHERE tenant_id = $1 AND customer_id = $2 AND lifecycle_state <> 'RETIRED') +
+                        (SELECT count(*) FROM smart_alarm.users WHERE tenant_id = $1 AND customer_id = $2 AND status <> 'ARCHIVED') +
+                        (SELECT count(*) FROM smart_alarm.assets WHERE tenant_id = $1 AND customer_id = $2 AND status = 'ACTIVE')
+                    """,
+                    principal.internal_tenant_id, customer_uuid,
+                )
+                if active_resources:
+                    raise WriteError("customer_has_resources", 409)
+                platform_customer_id, customer_name = current["thingsboard_customer_id"], current["name"]
+                if platform_customer_id is None:
+                    raise WriteError("customer_identity_mapping_required", 409)
+            try:
+                await platform.delete_customer(context.platform_token, platform_customer_id)
+            except ThingsBoardError as exc:
+                await _fail_operation(database, principal, operation_id, exc.code)
+                raise _platform_write_error(exc) from exc
+            try:
+                async with _scoped_connection(await database(), principal) as connection:
+                    row = await connection.fetchrow("UPDATE smart_alarm.customers SET status = 'ARCHIVED', archived_at = clock_timestamp(), version = version + 1, updated_at = clock_timestamp() WHERE tenant_id = $1 AND id = $2 AND status = 'ACTIVE' RETURNING id, name, archived_at", principal.internal_tenant_id, customer_uuid)
+                    if row is None:
+                        raise WriteError("not_found", 404)
+                    result = {"operationId": str(operation_id), "kind": "customer-archive", "status": "SUCCEEDED", "customer": {"id": str(row["id"]), "name": row["name"], "deviceCount": 0, "assetCount": 0}}
+                    await _finish_operation(connection, operation_id, result, customer_id)
+                    await _audit(connection, principal, key, "CUSTOMER_ARCHIVED", "CUSTOMER", customer_id, {})
+                return result
+            except Exception as exc:
+                try:
+                    replacement_id = await platform.create_customer(context.platform_token, name=customer_name)
+                    async with _scoped_connection(await database(), principal) as connection:
+                        await connection.execute(
+                            "UPDATE smart_alarm.customers SET thingsboard_customer_id = $3 WHERE tenant_id = $1 AND id = $2 AND status = 'ACTIVE'",
+                            principal.internal_tenant_id, customer_uuid, replacement_id,
+                        )
+                except Exception:
+                    _LOGGER.exception("failed to compensate ThingsBoard customer archive %s", platform_customer_id)
+                await _fail_operation(database, principal, operation_id, "local_customer_archive_failed")
+                if isinstance(exc, WriteError):
+                    raise
+                raise WriteError("local_customer_archive_failed", 503) from exc
+        except (WriteError, ValueError, ThingsBoardError) as exc:
+            if isinstance(exc, ThingsBoardError):
+                return _write_error(_platform_write_error(exc))
             return _write_error(exc if isinstance(exc, WriteError) else WriteError("not_found", 404))
 
     @router.post("/api/v1/customers/{customer_id}/members")

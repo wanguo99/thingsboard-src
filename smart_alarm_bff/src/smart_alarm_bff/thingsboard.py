@@ -140,30 +140,46 @@ class ThingsBoardClient:
             raise ThingsBoardError("invalid_platform_identity_response", retryable=False) from exc
 
     async def create_tenant(self, access_token: str, *, name: str) -> UUID:
-        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 255 or name != name.strip():
-            raise ThingsBoardError("invalid_platform_tenant_name", retryable=False)
+        self._entity_name(name, "tenant")
         response = await self._authorized(
             "POST", "/api/tenant", access_token,
             json={"title": name, "additionalInfo": {}},
         )
         if response.status_code not in {200, 201}:
             raise ThingsBoardError("platform_tenant_create_failed", retryable=response.status_code >= 500 or response.status_code == 429)
-        try:
-            payload = response.json()
-            entity = payload.get("id") if isinstance(payload, dict) else None
-            raw_id = entity.get("id") if isinstance(entity, dict) else entity
-            tenant_id = UUID(raw_id) if isinstance(raw_id, str) else None
-        except (ValueError, TypeError):
-            tenant_id = None
-        if tenant_id is None:
-            raise ThingsBoardError("invalid_platform_tenant_response", retryable=False)
+        _payload, tenant_id = self._entity_response(response, "TENANT", "invalid_platform_tenant_response")
         return tenant_id
+
+    async def update_tenant(self, access_token: str, tenant_id: UUID, *, name: str) -> None:
+        self._entity_name(name, "tenant")
+        await self._rename_entity(access_token, "tenant", tenant_id, "TENANT", name)
 
     async def delete_tenant(self, access_token: str, tenant_id: UUID, *, missing_ok: bool = False) -> None:
         response = await self._authorized("DELETE", f"/api/tenant/{tenant_id}", access_token)
         expected = {200, 404} if missing_ok else {200}
         if response.status_code not in expected:
             raise ThingsBoardError("platform_tenant_delete_failed", retryable=response.status_code >= 500 or response.status_code == 429)
+
+    async def create_customer(self, access_token: str, *, name: str) -> UUID:
+        self._entity_name(name, "customer")
+        response = await self._authorized(
+            "POST", "/api/customer", access_token,
+            json={"title": name, "additionalInfo": {}},
+        )
+        if response.status_code not in {200, 201}:
+            raise ThingsBoardError("platform_customer_create_failed", retryable=response.status_code >= 500 or response.status_code == 429)
+        _payload, customer_id = self._entity_response(response, "CUSTOMER", "invalid_platform_customer_response")
+        return customer_id
+
+    async def update_customer(self, access_token: str, customer_id: UUID, *, name: str) -> None:
+        self._entity_name(name, "customer")
+        await self._rename_entity(access_token, "customer", customer_id, "CUSTOMER", name)
+
+    async def delete_customer(self, access_token: str, customer_id: UUID, *, missing_ok: bool = False) -> None:
+        response = await self._authorized("DELETE", f"/api/customer/{customer_id}", access_token)
+        expected = {200, 404} if missing_ok else {200}
+        if response.status_code not in expected:
+            raise ThingsBoardError("platform_customer_delete_failed", retryable=response.status_code >= 500 or response.status_code == 429)
 
     async def provision_user(
         self,
@@ -267,6 +283,62 @@ class ThingsBoardClient:
         if response.status_code in {401, 403}:
             raise ThingsBoardError("platform_user_operation_forbidden", retryable=False)
         return response
+
+    async def _rename_entity(
+        self,
+        access_token: str,
+        resource: str,
+        entity_id: UUID,
+        entity_type: str,
+        name: str,
+    ) -> None:
+        current = await self._authorized("GET", f"/api/{resource}/{entity_id}", access_token)
+        if current.status_code != 200:
+            raise ThingsBoardError(
+                f"platform_{resource}_read_failed",
+                retryable=current.status_code >= 500 or current.status_code == 429,
+            )
+        payload, current_id = self._entity_response(
+            current, entity_type, f"invalid_platform_{resource}_response",
+        )
+        if current_id != entity_id:
+            raise ThingsBoardError(f"invalid_platform_{resource}_response", retryable=False)
+        payload["title"] = name
+        updated = await self._authorized("POST", f"/api/{resource}", access_token, json=payload)
+        if updated.status_code != 200:
+            raise ThingsBoardError(
+                f"platform_{resource}_update_failed",
+                retryable=updated.status_code >= 500 or updated.status_code == 429,
+            )
+        _updated_payload, updated_id = self._entity_response(
+            updated, entity_type, f"invalid_platform_{resource}_response",
+        )
+        if updated_id != entity_id:
+            raise ThingsBoardError(f"invalid_platform_{resource}_response", retryable=False)
+
+    @staticmethod
+    def _entity_name(value: object, resource: str) -> str:
+        if not isinstance(value, str) or not 1 <= len(value.strip()) <= 255 or value != value.strip():
+            raise ThingsBoardError(f"invalid_platform_{resource}_name", retryable=False)
+        return value
+
+    @staticmethod
+    def _entity_response(
+        response: httpx.Response,
+        expected_type: str,
+        error_code: str,
+    ) -> tuple[dict[str, object], UUID]:
+        try:
+            payload = response.json()
+            entity = payload.get("id") if isinstance(payload, dict) else None
+            raw_id = entity.get("id") if isinstance(entity, dict) else entity
+            entity_type = entity.get("entityType") if isinstance(entity, dict) else expected_type
+            entity_id = UUID(raw_id) if isinstance(raw_id, str) else None
+        except (ValueError, TypeError):
+            payload, entity_id, entity_type = None, None, None
+        if not isinstance(payload, dict) or entity_id is None or entity_type != expected_type:
+            raise ThingsBoardError(error_code, retryable=False)
+        return dict(payload), entity_id
 
     async def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
         try:
