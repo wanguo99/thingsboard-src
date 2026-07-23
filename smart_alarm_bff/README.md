@@ -23,4 +23,6 @@ smart-alarm-migrate
 smart-alarm-bff
 ```
 
-The API exposes `/health`, `/ready` and loopback/protected `/metrics`. Business routes are added behind the `/api/v1` cookie session boundary; readiness remains false until PostgreSQL, Redis, ThingsBoard and OIDC discovery are reachable.
+The API exposes `/health`, `/ready` and loopback/protected `/metrics`, plus the initial `/api/v1/session` create/read/logout boundary. A session is created only after the presented ThingsBoard Bearer token is cross-checked against a locally registered user, an active Product Role and the mapped Tenant/Customer scope. The platform token is retained only as an AES-GCM envelope; the browser receives an HttpOnly/Secure cookie and a CSRF token. `SYS_ADMIN` deliberately has no Tenant or Customer scope; Tenant and Customer authorities must have both mappings present.
+
+Business routes are added behind the same cookie session boundary. Readiness remains false until PostgreSQL, Redis, ThingsBoard and OIDC discovery are reachable.

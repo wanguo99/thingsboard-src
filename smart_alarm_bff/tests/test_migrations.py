@@ -10,7 +10,7 @@ class MigrationContractTest(unittest.TestCase):
     def test_initial_schema_covers_production_control_plane(self) -> None:
         directory = Path(__file__).resolve().parents[1] / "migrations"
         migrations = load_migrations(directory)
-        self.assertEqual([item[0] for item in migrations], ["0001_initial.sql"])
+        self.assertEqual([item[0] for item in migrations], ["0001_initial.sql", "0002_seed_product_roles.sql"])
         sql = migrations[0][2]
         for table in (
             "tenants",
@@ -42,6 +42,12 @@ class MigrationContractTest(unittest.TestCase):
         self.assertIn("CREATE TRIGGER audit_events_append_only", sql)
         self.assertIn("credential_secret_ref", sql)
 
+    def test_product_role_seed_matches_policy_contract(self) -> None:
+        directory = Path(__file__).resolve().parents[1] / "migrations"
+        seed = load_migrations(directory)[1][2]
+        for role in ("SYSTEM_OPERATOR", "TENANT_OWNER", "TENANT_OPERATOR", "TENANT_VIEWER", "CUSTOMER_OPERATOR", "CUSTOMER_VIEWER"):
+            self.assertIn(f"('{role}'", seed)
+
     def test_migration_names_and_checksums_are_stable(self) -> None:
         directory = Path(__file__).resolve().parents[1] / "migrations"
         for name, checksum, sql in load_migrations(directory):
@@ -52,4 +58,3 @@ class MigrationContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

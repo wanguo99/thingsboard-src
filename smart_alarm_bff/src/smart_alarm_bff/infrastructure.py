@@ -11,6 +11,7 @@ import httpx
 from redis.asyncio import Redis
 
 from .config import ProductionSettings
+from .thingsboard import ThingsBoardClient
 
 
 class Infrastructure:
@@ -31,14 +32,16 @@ class Infrastructure:
             health_check_interval=30,
         )
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(3), follow_redirects=False)
+        self.thingsboard = ThingsBoardClient(settings.thingsboard_url)
 
     async def close(self) -> None:
         await self._http.aclose()
+        await self.thingsboard.close()
         await self._redis.aclose()
         if self._database_pool is not None:
             await self._database_pool.close()
 
-    async def _database(self) -> asyncpg.Pool[Any]:
+    async def database(self) -> asyncpg.Pool[Any]:
         if self._database_pool is not None:
             return self._database_pool
         async with self._database_lock:
@@ -75,7 +78,7 @@ class Infrastructure:
 
     async def _check_database(self) -> tuple[str, dict[str, object]]:
         try:
-            pool = await self._database()
+            pool = await self.database()
             async with pool.acquire() as connection:
                 value = await connection.fetchval("SELECT 1")
             return "postgresql", {"ready": value == 1}
@@ -95,4 +98,3 @@ class Infrastructure:
             return name, {"ready": response.status_code == 200, "statusCode": response.status_code}
         except Exception as exc:
             return name, {"ready": False, "errorType": type(exc).__name__}
-

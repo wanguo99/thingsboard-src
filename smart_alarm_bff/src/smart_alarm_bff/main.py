@@ -15,6 +15,7 @@ import uvicorn
 from . import __version__
 from .config import ConfigError, ProductionSettings
 from .infrastructure import Infrastructure
+from .session import SESSION_COOKIE, SessionError, SessionService, parse_bearer
 
 
 REQUESTS = Counter("smart_alarm_http_requests_total", "HTTP requests", ("method", "path", "status"))
@@ -24,6 +25,7 @@ LATENCY = Histogram("smart_alarm_http_request_duration_seconds", "HTTP request l
 def create_app() -> FastAPI:
     settings = ProductionSettings.from_env()
     infrastructure = Infrastructure(settings)
+    sessions = SessionService(infrastructure.thingsboard, settings.session_key)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -90,6 +92,50 @@ def create_app() -> FastAPI:
         if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
             return JSONResponse(status_code=404, content={"error": {"code": "not_found", "message": "endpoint not found"}})
         return PlainTextResponse(generate_latest().decode("utf-8"), media_type=CONTENT_TYPE_LATEST)
+
+    def session_error(exc: SessionError) -> JSONResponse:
+        # Do not disclose whether the platform identity, local mapping or scope failed.
+        message = "authentication failed" if exc.status_code != 403 else "request is not authorized"
+        return JSONResponse(status_code=exc.status_code, content={"error": {"code": exc.code, "message": message}})
+
+    @app.post("/api/v1/session")
+    async def create_session(request: Request, response: Response) -> Response:
+        try:
+            platform_token = parse_bearer(request.headers.get("Authorization"))
+            context, csrf_token = await sessions.create(await infrastructure.database(), platform_token)
+        except SessionError as exc:
+            return session_error(exc)
+        response.set_cookie(
+            SESSION_COOKIE,
+            context.session_token,
+            max_age=8 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+        )
+        return {"csrfToken": csrf_token}
+
+    @app.get("/api/v1/session")
+    async def get_session(request: Request) -> Response:
+        try:
+            context = await sessions.resolve(await infrastructure.database(), request.cookies.get(SESSION_COOKIE))
+        except SessionError as exc:
+            return session_error(exc)
+        return context.principal.public_summary()
+
+    @app.post("/api/v1/session/logout")
+    async def logout_session(request: Request, response: Response) -> Response:
+        try:
+            await sessions.revoke(
+                await infrastructure.database(),
+                request.cookies.get(SESSION_COOKIE),
+                request.headers.get("X-CSRF-Token"),
+            )
+        except SessionError as exc:
+            return session_error(exc)
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return {"status": "ok"}
 
     return app
 
