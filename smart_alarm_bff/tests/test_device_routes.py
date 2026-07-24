@@ -77,7 +77,7 @@ class DeviceRouteContractTest(unittest.TestCase):
             "id": UUID("22222222-2222-4222-8222-222222222222"),
             "device_uid": UUID("33333333-3333-4333-8333-333333333333"),
             "serial_number": "SIM-000003",
-            "technical_name": "stc-device",
+            "technical_name": "sad-device",
             "display_name": "Lobby",
             "lifecycle_state": "ACTIVE",
             "customer_id": None,

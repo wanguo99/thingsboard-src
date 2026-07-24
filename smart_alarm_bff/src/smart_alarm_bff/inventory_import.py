@@ -99,7 +99,7 @@ def parse_inventory_record(path: Path, *, now: datetime | None = None) -> Invent
     serial_number = payload.get("serialNumber")
     if not isinstance(serial_number, str) or not _SERIAL.fullmatch(serial_number):
         raise ValueError(f"invalid serialNumber: {resolved}")
-    if payload.get("deviceName") != f"stc-{device_uid}":
+    if payload.get("deviceName") != f"sad-{device_uid}":
         raise ValueError(f"deviceName does not match deviceUid: {resolved}")
     if (
         payload.get("claimState") != "AVAILABLE"

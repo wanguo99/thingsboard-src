@@ -17,7 +17,7 @@ from smart_alarm_bff.inventory_import import (
 
 
 DEVICE_UID = "550e8400-e29b-41d4-a716-446655440000"
-SERIAL = "STC-2N1T201RMV87AAE5J4CSAM8000-B"
+SERIAL = "SAD-2N1T201RMV87AAE5J4CSAM8000-B"
 
 
 class Result:
@@ -51,7 +51,7 @@ class InventoryImportTest(unittest.TestCase):
             "schemaVersion": 1,
             "deviceUid": DEVICE_UID,
             "serialNumber": SERIAL,
-            "deviceName": f"stc-{DEVICE_UID}",
+            "deviceName": f"sad-{DEVICE_UID}",
             "claimState": "AVAILABLE",
             "claimTokenHash": "sha256:" + hashlib.sha256(b"claim-token").hexdigest(),
             "claimExpiresAt": 2_000_000,

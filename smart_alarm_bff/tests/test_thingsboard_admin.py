@@ -34,7 +34,7 @@ def user_payload(*, authority: str = "TENANT_ADMIN", tenant_id: UUID = TENANT_ID
     }
 
 
-def device_payload(name: str = "stc-device") -> dict[str, object]:
+def device_payload(name: str = "sad-device") -> dict[str, object]:
     return {
         "id": entity(DEVICE_ID, "DEVICE"),
         "customerId": entity(UUID(int=0), "CUSTOMER"),
@@ -44,7 +44,7 @@ def device_payload(name: str = "stc-device") -> dict[str, object]:
     }
 
 
-def asset_payload(name: str = "stc-asset") -> dict[str, object]:
+def asset_payload(name: str = "sad-asset") -> dict[str, object]:
     return {
         "id": entity(ASSET_ID, "ASSET"),
         "customerId": entity(CUSTOMER_ID, "CUSTOMER"),
@@ -127,7 +127,7 @@ class ThingsBoardAdminClientTest(unittest.TestCase):
                 payload = json.loads(request.content)
                 self.assertEqual(payload, {
                     "device": {
-                        "name": "stc-device",
+                        "name": "sad-device",
                         "type": "smart-alarm",
                         "label": "Lobby",
                         "deviceProfileId": entity(PROFILE_ID, "DEVICE_PROFILE"),
@@ -137,12 +137,12 @@ class ThingsBoardAdminClientTest(unittest.TestCase):
                 })
                 # Official 4.3.1.3 reports duplicate device names as HTTP 400.
                 return httpx.Response(400, json={"status": 400, "message": "duplicate"})
-            self.assertEqual(request.url.params["deviceName"], "stc-device")
+            self.assertEqual(request.url.params["deviceName"], "sad-device")
             return httpx.Response(200, json=device_payload())
 
         result = self.execute_scenario(handler, lambda client: client.create_device(
             "service.jwt",
-            name="stc-device",
+            name="sad-device",
             label="Lobby",
             profile_id=PROFILE_ID,
             access_token="device-secret-token",
@@ -163,7 +163,7 @@ class ThingsBoardAdminClientTest(unittest.TestCase):
 
         with self.assertRaisesRegex(PlatformAdminError, "thingsboard_device_identity_conflict"):
             self.execute_scenario(handler, lambda client: client.create_device(
-                "service.jwt", name="stc-device", label="Lobby", profile_id=PROFILE_ID,
+                "service.jwt", name="sad-device", label="Lobby", profile_id=PROFILE_ID,
                 access_token="device-secret-token", device_uid=DEVICE_UID,
             ))
 
@@ -225,11 +225,11 @@ class ThingsBoardAdminClientTest(unittest.TestCase):
 
         async def scenario(client: ThingsBoardAdminClient) -> None:
             await client.create_asset(
-                "service.jwt", name="stc-asset", label="Lobby", asset_type="SITE",
+                "service.jwt", name="sad-asset", label="Lobby", asset_type="SITE",
                 asset_uid=ASSET_ID, customer_id=CUSTOMER_ID,
             )
             await client.update_asset(
-                "service.jwt", ASSET_ID, name="stc-asset", label="Updated", asset_type="SITE", asset_uid=ASSET_ID,
+                "service.jwt", ASSET_ID, name="sad-asset", label="Updated", asset_type="SITE", asset_uid=ASSET_ID,
             )
             await client.save_asset_relation("service.jwt", ASSET_ID, ASSET_ID)
             await client.delete_asset_relation("service.jwt", ASSET_ID, ASSET_ID)
@@ -248,7 +248,7 @@ class ThingsBoardAdminClientTest(unittest.TestCase):
             return httpx.Response(200, json=asset_payload())
 
         result = self.execute_scenario(handler, lambda client: client.create_asset(
-            "service.jwt", name="stc-asset", label="Lobby", asset_type="SITE",
+            "service.jwt", name="sad-asset", label="Lobby", asset_type="SITE",
             asset_uid=ASSET_ID, customer_id=None,
         ))
         self.assertEqual(result["uuid"], ASSET_ID)

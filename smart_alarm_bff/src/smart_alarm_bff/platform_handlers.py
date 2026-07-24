@@ -195,7 +195,7 @@ class PlatformEntityHandlers:
             if platform_id is not None:
                 await self._thingsboard.delete_asset(session.token, platform_id)
         else:
-            technical_name = f"stc-asset-{context['id']}"
+            technical_name = f"sad-asset-{context['id']}"
             if platform_id is None:
                 asset = await self._thingsboard.create_asset(
                     session.token, name=technical_name, label=context["name"],
