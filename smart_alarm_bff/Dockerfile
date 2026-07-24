@@ -31,6 +31,6 @@ RUN python -m venv /opt/smart-alarm \
 COPY migrations /opt/smart-alarm/migrations
 USER 10001:10001
 WORKDIR /opt/smart-alarm
-EXPOSE 9081 9464
+EXPOSE 6004 9464
 
 ENTRYPOINT ["smart-alarm-bff"]

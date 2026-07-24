@@ -72,6 +72,22 @@ def _loopback_http_origin(env: Mapping[str, str], name: str) -> str:
     return value
 
 
+def _development_origin(env: Mapping[str, str], name: str) -> str:
+    value = _required(env, name).rstrip("/")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConfigError(f"{name} must be an absolute HTTP(S) origin in local mode")
+    return value
+
+
 def _readable_file(env: Mapping[str, str], name: str) -> Path:
     path = Path(_required(env, name))
     if not path.is_file():
@@ -192,6 +208,7 @@ class ProductionSettings:
     notification_from: str
     webhook_url: bytes = field(repr=False)
     otel_exporter_endpoint: str
+    bind_port: int
     database_tls: bool = True
     valkey_tls: bool = True
     oidc_readiness: bool = True
@@ -273,6 +290,7 @@ class ProductionSettings:
             notification_from=notification_from,
             webhook_url=_secret_https_url(source, "SMART_ALARM_WEBHOOK_URL"),
             otel_exporter_endpoint=_https_url(source, "SMART_ALARM_OTEL_EXPORTER_ENDPOINT", allow_path=True),
+            bind_port=_port(source, "SMART_ALARM_HTTP_PORT"),
         )
 
     def public_summary(self) -> dict[str, object]:
@@ -299,6 +317,7 @@ class LocalSettings:
     database_name: str
     database_user: str
     database_password: bytes = field(repr=False)
+    bind_port: int
     database_ca_file: None = None
     valkey_host: str = "127.0.0.1"
     valkey_port: int = 6379
@@ -326,7 +345,7 @@ class LocalSettings:
         commit = _required(source, "SMART_ALARM_DEPLOYMENT_COMMIT").lower()
         if not _COMMIT_PATTERN.fullmatch(commit):
             raise ConfigError("SMART_ALARM_DEPLOYMENT_COMMIT must be a 7..40 character lowercase Git SHA")
-        public_origin = _loopback_http_origin(source, "SMART_ALARM_PUBLIC_ORIGIN")
+        public_origin = _development_origin(source, "SMART_ALARM_PUBLIC_ORIGIN")
         thingsboard_url = _loopback_http_origin(source, "TB_HTTP_URL")
         database_host = _required(source, "SMART_ALARM_DATABASE_HOST")
         valkey_host = _required(source, "SMART_ALARM_VALKEY_HOST")
@@ -337,7 +356,7 @@ class LocalSettings:
         }:
             raise ConfigError("local database and Valkey hosts must be loopback addresses")
         allowed_origins = tuple(
-            _loopback_http_origin({"origin": item.strip()}, "origin")
+            _development_origin({"origin": item.strip()}, "origin")
             for item in _required(source, "SMART_ALARM_ALLOWED_ORIGINS").split(",")
             if item.strip()
         )
@@ -355,6 +374,7 @@ class LocalSettings:
             database_name=_required(source, "SMART_ALARM_DATABASE_NAME"),
             database_user=_required(source, "SMART_ALARM_DATABASE_USER"),
             database_password=read_secret(source, "SMART_ALARM_DATABASE_PASSWORD", minimum_bytes=8),
+            bind_port=_port(source, "SMART_ALARM_HTTP_PORT"),
             valkey_host=valkey_host,
             valkey_port=_port(source, "SMART_ALARM_VALKEY_PORT"),
             valkey_username=source.get("SMART_ALARM_VALKEY_USERNAME", "").strip() or None,

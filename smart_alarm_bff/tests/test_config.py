@@ -21,6 +21,7 @@ class ProductionSettingsTest(unittest.TestCase):
             "SMART_ALARM_ENVIRONMENT": "staging-cn",
             "SMART_ALARM_DEPLOYMENT_COMMIT": "0123456789abcdef",
             "SMART_ALARM_PUBLIC_ORIGIN": "https://alarm.example.com",
+            "SMART_ALARM_HTTP_PORT": "6004",
             "TB_HTTP_URL": "https://tb.example.com",
             "TB_HTTP_CA_FILE": str(ca),
             "TB_MQTT_HOST": "mqtt.example.com",
@@ -74,6 +75,7 @@ class ProductionSettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.environment, "staging-cn")
         self.assertEqual(settings.allowed_origins, ("https://alarm.example.com",))
+        self.assertEqual(settings.bind_port, 6004)
         representation = repr(settings)
         self.assertNotIn("database-password-value", representation)
         self.assertNotIn("valkey-password-value", representation)
@@ -124,6 +126,7 @@ class LocalSettingsTest(unittest.TestCase):
             "SMART_ALARM_ENVIRONMENT": "local",
             "SMART_ALARM_DEPLOYMENT_COMMIT": "0123456789abcdef",
             "SMART_ALARM_PUBLIC_ORIGIN": "http://127.0.0.1:5173",
+            "SMART_ALARM_HTTP_PORT": "6004",
             "TB_HTTP_URL": "http://127.0.0.1:9090",
             "SMART_ALARM_DATABASE_HOST": "127.0.0.1",
             "SMART_ALARM_DATABASE_PORT": "55432",
@@ -152,15 +155,20 @@ class LocalSettingsTest(unittest.TestCase):
         self.assertEqual(settings.bind_host, "127.0.0.1")
         self.assertEqual(settings.session_cookie_name, "smart_alarm_session_local")
         self.assertEqual(settings.device_secret_key_version, 1)
+        self.assertEqual(settings.bind_port, 6004)
 
-    def test_rejects_non_loopback_http_origins(self) -> None:
-        for name, value in (
-            ("SMART_ALARM_PUBLIC_ORIGIN", "http://192.168.1.10:5173"),
-            ("TB_HTTP_URL", "http://thingsboard.internal:9090"),
-        ):
-            with self.subTest(name=name):
-                with self.assertRaisesRegex(ConfigError, "loopback HTTP origin"):
-                    LocalSettings.from_env({**self.env, name: value})
+    def test_accepts_explicit_public_ip_browser_origin_in_local_mode(self) -> None:
+        settings = LocalSettings.from_env({
+            **self.env,
+            "SMART_ALARM_PUBLIC_ORIGIN": "http://115.29.239.55:6003",
+            "SMART_ALARM_ALLOWED_ORIGINS": "http://115.29.239.55:6003",
+        })
+
+        self.assertEqual(settings.public_origin, "http://115.29.239.55:6003")
+
+    def test_rejects_non_loopback_thingsboard_origin(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "loopback HTTP origin"):
+            LocalSettings.from_env({**self.env, "TB_HTTP_URL": "http://thingsboard.internal:6001"})
 
     def test_rejects_non_loopback_data_services(self) -> None:
         for name in ("SMART_ALARM_DATABASE_HOST", "SMART_ALARM_VALKEY_HOST"):

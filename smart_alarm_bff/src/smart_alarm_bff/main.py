@@ -20,6 +20,7 @@ from .directory_routes import mount_directory_routes
 from .device_routes import mount_device_routes
 from .write_routes import mount_write_routes
 from .session import SessionError, SessionService, parse_bearer
+from .websocket_proxy import mount_websocket_proxy
 
 
 REQUESTS = Counter("smart_alarm_http_requests_total", "HTTP requests", ("method", "path", "status"))
@@ -148,6 +149,13 @@ def create_app() -> FastAPI:
     mount_write_routes(app, sessions, infrastructure.database, infrastructure.thingsboard)
     mount_device_routes(app, sessions, infrastructure.database)
     mount_activation_routes(app, infrastructure.database, infrastructure.device_secrets)
+    mount_websocket_proxy(
+        app,
+        sessions,
+        infrastructure.database,
+        thingsboard_url=settings.thingsboard_url,
+        allowed_origins=settings.allowed_origins,
+    )
 
     return app
 
@@ -161,7 +169,7 @@ def run() -> None:
         create_app,
         factory=True,
         host=settings.bind_host,
-        port=9081,
+        port=settings.bind_port,
         proxy_headers=True,
         forwarded_allow_ips="127.0.0.1",
         server_header=False,
