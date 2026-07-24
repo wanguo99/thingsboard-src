@@ -23,6 +23,7 @@ smart-alarm-migrate
 smart-alarm-bootstrap-system-user
 smart-alarm-bff
 smart-alarm-worker
+smart-alarm-import-inventory --factory-batch BATCH --hardware-model MODEL inventory_record.json
 ```
 
 After migrations, `smart-alarm-bootstrap-system-user` verifies an existing ThingsBoard `SYS_ADMIN` with `SMART_ALARM_BOOTSTRAP_USERNAME` and `SMART_ALARM_BOOTSTRAP_PASSWORD` (or its `_FILE` variant), then idempotently registers that immutable ThingsBoard User ID with the `SYSTEM_OPERATOR` product role. The password is used only for the verification request and is never written to PostgreSQL or printed. This bootstrap is not self-registration and does not implement SMS delivery or verification codes.
@@ -40,5 +41,7 @@ The device activation API now exchanges the immutable device UUID, serial number
 Concrete lifecycle handlers create the official ThingsBoard Device and ACCESS_TOKEN, synchronize Customer assignment and Asset Relation metadata, and retire a device by rotating its platform credential before any local success is recorded. Retirement retains the ThingsBoard Device ID for telemetry and Alarm history, removes the encrypted old Token and revokes activation grants. Every local completion checks the outbox event ID, worker owner, monotonic fencing token and unexpired lease in the same transaction. Retryable platform failures preserve the transition state for exponential retry; permanent failures move the operation and lifecycle into explicit failed states before dead-lettering. `smart-alarm-worker` registers only the three supported lifecycle events, uses the independent worker database identity, exports loopback Prometheus metrics and drains its claimed batch on SIGTERM/SIGINT before closing PostgreSQL and ThingsBoard clients.
 
 For local development, `deployment/thingsboard/local/tb-local.sh bff-start` starts the API and worker together. The worker metrics endpoint is bound only to `127.0.0.1:9464`. Tenant service-identity JSON files are supplied through the read-only `smart-alarm-service-identities` volume; credentials must never be committed to this repository. Run `scripts/check.sh` to compile and execute the test suite; it uses `.venv/bin/python` when available or accepts an explicit `PYTHON` path.
+
+Factory inventory is imported offline with `smart-alarm-import-inventory` under a dedicated database identity that can access only `device_inventory`. The importer accepts only canonical, unused simulator factory records with mode `0600`, validates the UUIDv4, serial, technical name, SHA-256 claim digest and unexpired timestamps, and is idempotent only when every stored field is identical. It never accepts or prints the plaintext claim token and never overwrites claimed or conflicting inventory.
 
 Business routes are added behind the same cookie session boundary. Readiness remains false until PostgreSQL, Valkey, ThingsBoard and OIDC discovery are reachable. Valkey is the only supported cache service; the pinned Python `redis` package is used solely as its RESP client driver.
